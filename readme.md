@@ -278,9 +278,10 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-LIV.git
-cd Mark-LIV
-python setup.py        # installs deps for YOUR OS + the browser automation engine
+git clone https://github.com/rinnkl088-a11y/Jarvis-LV.git
+Set-Location Jarvis-LV
+python setup.py
+python doctor.py
 python main.py
 ```
 
