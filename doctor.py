@@ -96,13 +96,34 @@ def main() -> int:
     print(f"[{'OK' if ok else '--'}] Screen: {msg}")
 
     for mod in ("core.event_bus", "core.permissions",
-                "core.ai_router", "core.task_center", "core.history"):
+                "core.ai_router", "core.task_center", "core.history",
+                # JARVIS-X agent layer (Phases 2–23)
+                "core.tool_registry", "core.agent", "core.vision",
+                "core.computer_use", "core.system_agent", "core.optimizer",
+                "core.coding_agent", "core.memory2", "core.gaming",
+                "core.autonomy", "core.dashboard", "core.logging",
+                "core.pc_doctor", "core.planner", "core.self_correction",
+                "core.file_agent", "core.computer_control", "core.long_running",
+                "core.proactive", "core.personality"):
         try:
             __import__(mod)
             print(f"[OK] import {mod}")
         except Exception as e:
             print(f"[FAIL] import {mod}: {e}")
             ok_all = False
+
+    # main.py inline tool surface must include the agent-layer tools.
+    try:
+        import main as _main_mod
+        names = {d["name"] for d in _main_mod.TOOL_DECLARATIONS}
+        for want in ("run_agent_task", "pc_health", "file_op",
+                     "computer_op", "browser_op", "long_task", "memory_layer"):
+            print(f"[{'OK' if want in names else 'FAIL'}] tool {want}")
+            if want not in names:
+                ok_all = False
+    except Exception as e:
+        print(f"[FAIL] main.py tool surface: {e}")
+        ok_all = False
 
     face = HERE / "core" / "face_model.obj"
     print(f"[{'OK' if face.exists() else '--'}] avatar face_model.obj: "

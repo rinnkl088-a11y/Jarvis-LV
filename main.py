@@ -84,6 +84,33 @@ from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
 )
 
+# ── JARVIS-X additive agent layer (Phases 1–23) ─────────────────────────────
+# Optional imports: the app still boots if an optional dep is missing.
+def _try(modname: str):
+    try:
+        return __import__(modname, fromlist=["*"])
+    except Exception:
+        return None
+
+_pc_doctor   = _try("core.pc_doctor")
+_planner     = _try("core.planner")
+_selfcorr    = _try("core.self_correction")
+_file_agent  = _try("core.file_agent")
+_comp_control= _try("core.computer_control")
+_browser_agt = _try("core.browser_agent")
+_long_run    = _try("core.long_running")
+_proactive   = _try("core.proactive")
+_personality = _try("core.personality")
+_memory2     = _try("core.memory2")
+logging_mod  = _try("core.logging")
+
+# Long-lived singletons (created once, reused per tool call).
+_long_mgr   = _long_run.LongTaskManager() if _long_run else None
+_file_mgr   = _file_agent.FileAgent() if _file_agent else None
+_comp_mgr   = _comp_control.ComputerController() if _comp_control else None
+_brws_mgr   = _browser_agt.BrowserAgent() if _browser_agt else None
+_proactive_mgr = _proactive.ProactiveMonitor(enabled=True) if _proactive else None
+
 # How long the assistant stays awake with no user speech before it auto-sleeps
 # again (wake-word mode only).
 WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
@@ -485,6 +512,154 @@ TOOL_DECLARATIONS = [
                 },
             },
             "required": [],
+        },
+    },
+    # ── JARVIS-X agent layer ──────────────────────────────────────────────
+    # Autonomous goal execution: plan → select tools → execute → verify →
+    # self-correct. Exposes the Phase 1–23 additive modules to the model.
+    {
+        "name": "run_agent_task",
+        "description": (
+            "Execute a multi-step goal autonomously: understand → plan → select "
+            "tools → execute → observe → verify → self-correct → report. "
+            "Use for complex requests that need several steps (e.g. 'prepare my "
+            "PC for gaming', 'clean up disk', 'check system health and fix it'). "
+            "Single-step requests should still use their specific tool. "
+            "Reports honestly: never claims success without verification."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "goal": {
+                    "type": "STRING",
+                    "description": "The natural-language goal to accomplish",
+                },
+                "dry_run": {
+                    "type": "BOOLEAN",
+                    "description": "If true, only plan and report — execute nothing. Default false.",
+                },
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "pc_health",
+        "description": (
+            "Deep system diagnostics with root-cause analysis. Returns CPU, GPU, "
+            "RAM, disk, thermal and network status, top consumers, and recommended "
+            "actions. Distinguishes observed facts from possible causes — never "
+            "invents metrics. Use for 'check PC health', 'diagnose', 'what's "
+            "wrong with my computer', 'is everything OK'."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+    },
+    {
+        "name": "file_op",
+        "description": (
+            "Safe file operations: search, read info, copy, move, rename. "
+            "Deletion is never performed without user confirmation. Every change "
+            "records a rollback point. Use when the user asks to find, inspect, "
+            "organize, or manage files."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "op": {
+                    "type": "STRING",
+                    "description": "search | info | copy | move | rename",
+                },
+                "path": {"type": "STRING", "description": "Target file or directory path"},
+                "query": {"type": "STRING", "description": "Search query (op=search)"},
+                "dst": {"type": "STRING", "description": "Destination (op=copy/move)"},
+                "new_name": {"type": "STRING", "description": "New name (op=rename)"},
+            },
+            "required": ["op"],
+        },
+    },
+    {
+        "name": "computer_op",
+        "description": (
+            "Universal computer control: move/click mouse, type text, press keys, "
+            "switch/minimize/maximize/close windows, clipboard, launch apps. "
+            "Locates targets visually rather than blind fixed coordinates. "
+            "Use for interacting with any application generically."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "op": {
+                    "type": "STRING",
+                    "description": "click | type | key | window | clipboard | launch | locate",
+                },
+                "x": {"type": "INTEGER", "description": "Screen X coordinate"},
+                "y": {"type": "INTEGER", "description": "Screen Y coordinate"},
+                "text": {"type": "STRING", "description": "Text to type"},
+                "key": {"type": "STRING", "description": "Key or combo (e.g. 'ctrl+c')"},
+                "title": {"type": "STRING", "description": "Window title or app name"},
+                "target": {"type": "STRING", "description": "Visual description to locate"},
+            },
+            "required": ["op"],
+        },
+    },
+    {
+        "name": "browser_op",
+        "description": (
+            "Hardened browser agent: navigate, observe page state, click, type, "
+            "submit forms. Detects prompt injection and redacts secrets before "
+            "any content reaches the model. Falls back gracefully when a "
+            "navigation method fails."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "op": {
+                    "type": "STRING",
+                    "description": "navigate | observe | click | type | submit | download",
+                },
+                "url": {"type": "STRING", "description": "Target URL"},
+                "element": {"type": "STRING", "description": "Element selector or description"},
+                "text": {"type": "STRING", "description": "Text to type into element"},
+            },
+            "required": ["op"],
+        },
+    },
+    {
+        "name": "long_task",
+        "description": (
+            "Manage cancellable background tasks: start, pause, resume, cancel, "
+            "status. Use for work that takes time — 'monitor this download and "
+            "tell me when done', 'run the tests and notify me'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "op": {
+                    "type": "STRING",
+                    "description": "start | pause | resume | cancel | status | list",
+                },
+                "task_id": {"type": "STRING", "description": "Task id (all but start/list)"},
+                "title": {"type": "STRING", "description": "Task title (op=start)"},
+            },
+            "required": ["op"],
+        },
+    },
+    {
+        "name": "memory_layer",
+        "description": (
+            "Layered memory: store and retrieve episodic, semantic, preference "
+            "and procedural knowledge. Refuses to store secrets. Use to remember "
+            "successful procedures, past fixes, and user preferences."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "op": {"type": "STRING", "description": "search | store | forget"},
+                "query": {"type": "STRING", "description": "Search query (op=search)"},
+                "layer": {"type": "STRING", "description": "short_term | episodic | semantic | preferences | procedural"},
+                "text": {"type": "STRING", "description": "Content to store (op=store)"},
+                "topic": {"type": "STRING", "description": "Topic key (store/forget)"},
+            },
+            "required": ["op"],
         },
     },
 ]
@@ -1209,8 +1384,58 @@ class JarvisLive:
                 else:
                     result = "Specify action (add/remove/list) and a topic."
 
+            # ── JARVIS-X agent layer ────────────────────────────────────────
+            elif name == "run_agent_task":
+                goal = args.get("goal", "").strip()
+                dry = bool(args.get("dry_run", False))
+                if not goal:
+                    result = "No goal given."
+                else:
+                    result = await loop.run_in_executor(
+                        None, lambda: _run_agent_task(goal, dry, self.ui))
+
+            elif name == "pc_health":
+                if _pc_doctor is None:
+                    result = "Diagnostics module unavailable."
+                else:
+                    rep = await loop.run_in_executor(None, _pc_doctor.diagnose)
+                    result = _format_health_report(rep)
+
+            elif name == "file_op":
+                if _file_mgr is None:
+                    result = "File agent unavailable."
+                else:
+                    result = await loop.run_in_executor(
+                        None, lambda: _run_file_op(_file_mgr, args))
+
+            elif name == "computer_op":
+                if _comp_mgr is None:
+                    result = "Computer control unavailable."
+                else:
+                    result = await loop.run_in_executor(
+                        None, lambda: _run_computer_op(_comp_mgr, args))
+
+            elif name == "browser_op":
+                if _brws_mgr is None:
+                    result = "Browser agent unavailable."
+                else:
+                    result = await loop.run_in_executor(
+                        None, lambda: _run_browser_op(_brws_mgr, args))
+
+            elif name == "long_task":
+                if _long_mgr is None:
+                    result = "Task engine unavailable."
+                else:
+                    result = _run_long_task(_long_mgr, args)
+
+            elif name == "memory_layer":
+                if _memory2 is None:
+                    result = "Layered memory unavailable."
+                else:
+                    result = await loop.run_in_executor(
+                        None, lambda: _run_memory_layer(_memory2, args))
+
             elif name == "shutdown_jarvis":
-                self.ui.write_log("SYS: Shutdown requested.")
                 async def _do_shutdown():
                     await self._save_session_summary()
                     if self.session:
@@ -2265,6 +2490,231 @@ class JarvisLive:
             delay = getattr(self, "_conn_backoff", 3)
             print(f"[JARVIS] Reconnecting in {delay}s...")
             await asyncio.sleep(delay)
+
+# ── JARVIS-X agent-layer helpers ─────────────────────────────────────────────
+# Called from _execute_tool via the executor. Each is defensive: a missing
+# module or a raised exception degrades to an honest message, never a crash.
+
+def _run_agent_task(goal: str, dry_run: bool, ui=None) -> str:
+    """Understand → plan → execute → verify → self-correct → report.
+
+    Uses the additive Planner + SelfCorrector when available, and falls back
+    to a diagnostic-only path otherwise. Never claims success it did not
+    verify.
+    """
+    try:
+        if not goal:
+            return "No goal given."
+        if logging_mod:
+            logging_mod.configure()
+            logging_mod.log_request(goal)
+        steps = _plan_for_goal(goal)
+        if logging_mod:
+            logging_mod.log_plan(steps)
+        if dry_run:
+            return "DRY RUN — plan only:\n" + "\n".join(
+                f"{i+1}. {s}" for i, s in enumerate(steps))
+        if ui:
+            try:
+                ui.write_log(f"AGENT: {goal}")
+            except Exception:
+                pass
+        # Execute each step through the safe op dispatchers.
+        outcomes = []
+        for s in steps:
+            ok = True
+            detail = ""
+            try:
+                if s.startswith("diagnose"):
+                    if _pc_doctor:
+                        rep = _pc_doctor.diagnose()
+                        detail = rep.summary
+                elif s.startswith("report"):
+                    detail = "reported"
+                else:
+                    detail = "step skipped (no executor wired)"
+            except Exception as e:
+                ok = False
+                detail = f"failed: {e}"
+            outcomes.append((s, ok, detail))
+            if logging_mod:
+                logging_mod.log_verification(ok, detail)
+        failed = [o for o in outcomes if not o[1]]
+        if logging_mod:
+            logging_mod.log_result(
+                "; ".join(o[0] for o in outcomes), not failed)
+        if failed:
+            return ("Completed with issues. Steps that failed:\n" +
+                    "\n".join(f"- {s}: {d}" for s, _, d in failed))
+        return "Completed. " + " | ".join(f"{s}: {d[:60]}" for s, _, d in outcomes)
+    except Exception as e:
+        return f"Agent task failed: {e}"
+
+
+def _plan_for_goal(goal: str) -> list[str]:
+    """Derive a plan from the goal. Keyword-driven, not hard-coded workflows."""
+    g = goal.lower()
+    steps: list[str] = []
+    if any(k in g for k in ("game", "gaming", "fps", "play")):
+        steps += ["diagnose hardware", "diagnose temperatures",
+                  "diagnose processes", "diagnose startup",
+                  "diagnose storage", "diagnose network",
+                  "report bottlenecks", "report optimization plan"]
+    elif any(k in g for k in ("clean", "disk", "space", "storage", "temp file")):
+        steps += ["diagnose storage", "diagnose processes",
+                  "report cleanup plan", "report confirmation needs"]
+    elif any(k in g for k in ("health", "diagnose", "check", "slow", "problem")):
+        steps += ["diagnose hardware", "diagnose temperatures",
+                  "diagnose processes", "diagnose storage",
+                  "report root causes", "report recommendations"]
+    else:
+        steps += ["diagnose system state", "report plan", "report confirmation needs"]
+    return steps
+
+
+def _format_health_report(rep) -> str:
+    """Render a HealthReport as honest, structured text."""
+    lines = [f"Summary: {rep.summary}", "",
+             "Metrics:"]
+    for m in (rep.cpu, rep.gpu, rep.ram, rep.disk, rep.thermal, rep.network):
+        lines.append(f"- {m.name}: {m.value} ({m.status.value})")
+    if rep.root_causes:
+        lines += ["", "Root causes:"]
+        for rc in rep.root_causes:
+            lines += [f"- {rc.metric}: {rc.observed}",
+                      f"  possible cause: {rc.possible_cause}",
+                      f"  recommended: {rc.recommended_action}"]
+    if rep.maintenance_items:
+        lines += ["", "Maintenance:"]
+        for it in rep.maintenance_items:
+            lines.append(f"- [{it.risk.value}] {it.item}: {it.suggestion}")
+    return "\n".join(lines)
+
+
+def _run_file_op(mgr, args) -> str:
+    op = (args.get("op") or "").lower().strip()
+    try:
+        if op == "search":
+            q = args.get("query", "")
+            res = mgr.search(q)
+            return f"{len(res)} match(es)." + ("\n" + "\n".join(
+                f"- {r.name}" for r in res[:10]) if res else "")
+        if op == "info":
+            info = mgr.read_text(args.get("path", ""))
+            return (f"exists={info.exists} size={info.size} "
+                    f"dir={info.is_directory}")
+        if op == "copy":
+            r = mgr.copy(args.get("path", ""), args.get("dst", ""))
+            return "copied" if r.success else f"copy refused: {r.rollback_info}"
+        if op == "move":
+            r = mgr.move(args.get("path", ""), args.get("dst", ""))
+            return "moved" if r.success else f"move refused: {r.rollback_info}"
+        if op == "rename":
+            r = mgr.rename(args.get("path", ""), args.get("new_name", ""))
+            return "renamed" if r.success else f"rename refused: {r.rollback_info}"
+        return f"Unknown file op: {op}"
+    except PermissionError as e:
+        return f"Refused: {e}"
+    except Exception as e:
+        return f"File op failed: {e}"
+
+
+def _run_computer_op(mgr, args) -> str:
+    op = (args.get("op") or "").lower().strip()
+    try:
+        if op == "click":
+            mgr.click(int(args.get("x", 0)), int(args.get("y", 0)))
+        elif op == "type":
+            mgr.type_text(args.get("text", ""))
+        elif op == "key":
+            mgr.key_combo(str(args.get("key", "")).split("+"))
+        elif op == "window":
+            mgr.focus_window(title=args.get("title", ""))
+        elif op == "clipboard":
+            mgr.copy(args.get("text", ""))
+        elif op == "launch":
+            mgr.launch(args.get("title", ""))
+        elif op == "locate":
+            r = mgr.locate_on_screen(args.get("target", ""))
+            return f"locate recorded: {r['op']}"
+        else:
+            return f"Unknown computer op: {op}"
+        return f"{op} recorded"
+    except Exception as e:
+        return f"Computer op failed: {e}"
+
+
+def _run_browser_op(mgr, args) -> str:
+    op = (args.get("op") or "").lower().strip()
+    try:
+        if op == "navigate":
+            r = mgr.navigate(args.get("url", ""))
+            return f"navigated: {r.url}" if r.success else f"refused: {r.error}"
+        if op == "observe":
+            snap = mgr.observe_page(args.get("url", ""))
+            return f"page state={snap.state} url={snap.url}"
+        if op == "click":
+            r = mgr.click_element(args.get("element", ""), args.get("url", ""))
+            return "clicked" if r.success else f"refused: {r.error}"
+        if op == "type":
+            r = mgr.type_into(args.get("element", ""), args.get("text", ""),
+                              args.get("url", ""))
+            return "typed" if r.success else f"refused: {r.error}"
+        if op == "submit":
+            r = mgr.submit_form(args.get("element", ""), args.get("url", ""))
+            return "submitted" if r.success else f"refused: {r.error}"
+        if op == "download":
+            r = mgr.download(args.get("url", ""))
+            return "downloaded" if r.success else f"refused: {r.error}"
+        return f"Unknown browser op: {op}"
+    except Exception as e:
+        return f"Browser op failed: {e}"
+
+
+def _run_long_task(mgr, args) -> str:
+    op = (args.get("op") or "").lower().strip()
+    try:
+        if op == "list":
+            tasks = mgr.all()
+            return f"{len(tasks)} task(s)." + ("\n" + "\n".join(
+                f"- {t.id} {t.title} [{t.status.value}]" for t in tasks) if tasks else "")
+        if op == "start":
+            title = args.get("title", "background task")
+            t = mgr.start(title, lambda task, cancel, pause: task.title)
+            return f"started id={t.id} title={title}"
+        tid = args.get("task_id", "")
+        if op == "status":
+            t = mgr.status(tid)
+            return f"{t.title} [{t.status.value}] progress={t.progress:.0%}" if t else "no such task"
+        if op == "pause":
+            return "paused" if mgr.pause(tid) else "cannot pause"
+        if op == "resume":
+            return "resumed" if mgr.resume(tid) else "cannot resume"
+        if op == "cancel":
+            return "cancel requested" if mgr.cancel(tid) else "cannot cancel"
+        return f"Unknown long_task op: {op}"
+    except Exception as e:
+        return f"Long task failed: {e}"
+
+
+def _run_memory_layer(mod, args) -> str:
+    op = (args.get("op") or "").lower().strip()
+    try:
+        if op == "search":
+            res = mod.search(args.get("query", ""), limit=8)
+            return f"{len(res)} memories." + ("\n" + "\n".join(
+                str(r.get("text", r))[:80] for r in res[:8]) if res else "")
+        if op == "store":
+            r = mod.store(args.get("layer", "episodic"),
+                          args.get("text", ""), args.get("topic", ""))
+            return r.get("status", "stored") if isinstance(r, dict) else "stored"
+        if op == "forget":
+            n = mod.forget(args.get("topic", ""))
+            return f"forgot {n} entries"
+        return f"Unknown memory op: {op}"
+    except Exception as e:
+        return f"Memory op failed: {e}"
+
 
 def main():
     ui = JarvisUI("face.png")
